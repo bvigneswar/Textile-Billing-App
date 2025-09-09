@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  base: "./", // <- critical for relative paths on Vercel
   plugins: [
     react(),
     tailwindcss(),
@@ -16,7 +17,7 @@ export default defineConfig({
         theme_color: "#2563eb", // Tailwind blue-600
         background_color: "#ffffff",
         display: "standalone",
-        start_url: "/",
+        start_url: "./", // <- relative path
         icons: [
           {
             src: "/pwa-192x192.png",
