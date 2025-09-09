@@ -12,8 +12,10 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.13",
     "axios": "^1.11.0",
+    "file-saver": "^2.0.5",
     "jspdf": "^3.0.2",
     "jspdf-autotable": "^5.0.2",
+    "localforage": "^1.10.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "tailwindcss": "^4.1.13"

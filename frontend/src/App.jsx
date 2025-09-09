@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import localforage from "localforage";
+import { saveAs } from "file-saver";
 
 const API_URL = "http://localhost:5001/api/invoices";
 
@@ -10,118 +12,142 @@ function App() {
   const [date, setDate] = useState("");
   const [items, setItems] = useState([{ name: "", qty: 1, price: 0 }]);
 
-  // Always parse numbers, defaults to zero for invalid input
+  // === Helper Functions ===
   const updateItem = (index, field, value) => {
     const copy = [...items];
-    if (field === "qty") {
+    if (field === "qty")
       copy[index][field] = Number(value) >= 0 ? parseInt(value) || 0 : 0;
-    } else if (field === "price") {
+    else if (field === "price")
       copy[index][field] = Number(value) >= 0 ? parseFloat(value) || 0 : 0;
-    } else {
-      copy[index][field] = value;
-    }
+    else copy[index][field] = value;
     setItems(copy);
   };
 
-  // Total always calculated using sanitized numbers
   const calculateTotal = (items) =>
     items.reduce(
       (sum, it) => sum + (Number(it.qty) || 0) * (Number(it.price) || 0),
       0,
     );
+
   const total = calculateTotal(items);
 
+  // === Sync Offline Invoices when Online ===
+  useEffect(() => {
+    const syncOfflineInvoices = async () => {
+      const offlineInvoices =
+        (await localforage.getItem("offlineInvoices")) || [];
+      for (const invoice of offlineInvoices) {
+        try {
+          await axios.post(API_URL, invoice);
+        } catch (err) {
+          console.error("Failed to sync invoice", invoice, err);
+        }
+      }
+      await localforage.removeItem("offlineInvoices");
+    };
+
+    window.addEventListener("online", syncOfflineInvoices);
+    return () => window.removeEventListener("online", syncOfflineInvoices);
+  }, []);
+
+  // === Handle Form Submission ===
+
   const handleSubmit = async () => {
+    // Calculate total
     const total = calculateTotal(items);
-    const invoiceData = { customer, date, items, total };
 
-    try {
-      const res = await axios.post(API_URL, invoiceData);
-      const { invoiceNumber } = res.data;
+    // Generate client-side invoice number
+    let lastInvoiceNumber =
+      (await localforage.getItem("lastInvoiceNumber")) || 0;
+    const invoiceNumber = lastInvoiceNumber + 1;
+    await localforage.setItem("lastInvoiceNumber", invoiceNumber);
 
-      // Generate PDF
-      const doc = new jsPDF();
+    const invoiceData = { customer, date, items, total, invoiceNumber };
 
-      doc.setFillColor(37, 99, 235);
-      doc.rect(10, 10, 190, 20, "F");
+    // Optional: store invoices locally
+    let localInvoices = (await localforage.getItem("localInvoices")) || [];
+    localInvoices.push(invoiceData);
+    await localforage.setItem("localInvoices", localInvoices);
 
-      doc.setFontSize(16);
-      doc.setTextColor(255, 255, 255);
-      doc.text("Nexsys Textiles", 14, 23);
+    // === Generate PDF ===
+    const doc = new jsPDF();
 
-      doc.setTextColor(0, 0, 0);
-      doc.setFontSize(12);
-      doc.text(`Invoice #: ${invoiceNumber}`, 200 - 14, 18, { align: "right" });
-      doc.text(`Date: ${date}`, 200 - 14, 26, { align: "right" });
+    doc.setFillColor(37, 99, 235);
+    doc.rect(10, 10, 190, 20, "F");
 
-      doc.text(`Customer: ${customer}`, 14, 40);
+    doc.setFontSize(16);
+    doc.setTextColor(255, 255, 255);
+    doc.text("Nexsys Textiles", 14, 23);
 
-      const formatCurrency = (num) =>
-        "Rs. " +
-        Number(num).toLocaleString("en-IN", { minimumFractionDigits: 2 });
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(12);
+    doc.text(`Invoice #: ${invoiceNumber}`, 200 - 14, 18, { align: "right" });
+    doc.text(`Date: ${date}`, 200 - 14, 26, { align: "right" });
+    doc.text(`Customer: ${customer}`, 14, 40);
 
-      // Table: sanitize numbers for PDF too!
-      const tableData = items.map((it, i) => {
-        const qty = Number(it.qty) || 0;
-        const price = Number(it.price) || 0;
-        return [
-          i + 1,
-          it.name,
-          qty,
-          formatCurrency(price),
-          formatCurrency(qty * price),
-        ];
-      });
+    const formatCurrency = (num) =>
+      "Rs. " +
+      Number(num).toLocaleString("en-IN", { minimumFractionDigits: 2 });
 
-      autoTable(doc, {
-        startY: 50,
-        margin: { left: 14, right: 14 },
-        head: [["#", "Item", "Qty", "Price", "Subtotal"]],
-        body: tableData,
-        theme: "grid",
-        styles: { fontSize: 11 },
-        headStyles: {
-          fillColor: [37, 99, 235],
-          halign: "center",
-          textColor: 255,
-        },
-        bodyStyles: { halign: "center" },
-        columnStyles: {
-          2: { halign: "center" }, // Qty
-          3: { halign: "right" }, // Price
-          4: { halign: "right" }, // Subtotal
-        },
-        foot: [["", "", "", "Total", formatCurrency(total)]],
-        footStyles: {
-          fillColor: [240, 240, 240],
-          textColor: [0, 0, 0],
-          halign: "right",
-          fontStyle: "bold",
-        },
-      });
+    const tableData = items.map((it, i) => [
+      i + 1,
+      it.name,
+      Number(it.qty) || 0,
+      formatCurrency(Number(it.price) || 0),
+      formatCurrency((Number(it.qty) || 0) * (Number(it.price) || 0)),
+    ]);
 
-      const finalY = doc.lastAutoTable.finalY || 100;
-      doc.setFontSize(11);
-      doc.text("Thank you for your business!", 14, finalY + 20);
+    autoTable(doc, {
+      startY: 50,
+      margin: { left: 14, right: 14 },
+      head: [["#", "Item", "Qty", "Price", "Subtotal"]],
+      body: tableData,
+      theme: "grid",
+      styles: { fontSize: 11 },
+      headStyles: {
+        fillColor: [37, 99, 235],
+        halign: "center",
+        textColor: 255,
+      },
+      bodyStyles: { halign: "center" },
+      columnStyles: {
+        2: { halign: "center" },
+        3: { halign: "right" },
+        4: { halign: "right" },
+      },
+      foot: [["", "", "", "Total", formatCurrency(total)]],
+      footStyles: {
+        fillColor: [240, 240, 240],
+        textColor: [0, 0, 0],
+        halign: "right",
+        fontStyle: "bold",
+      },
+    });
 
-      doc.save(`Invoice-${invoiceNumber}.pdf`);
+    const finalY = doc.lastAutoTable.finalY || 100;
+    doc.setFontSize(11);
+    doc.text("Thank you for your business!", 14, finalY + 20);
 
-      alert(`Invoice #${invoiceNumber} saved & PDF generated!`);
-      setCustomer("");
-      setDate("");
-      setItems([{ name: "", qty: 1, price: 0 }]);
-    } catch (err) {
-      console.error(err);
-      alert("Error saving invoice");
-    }
+    // === Save PDF using file-saver ===
+    const pdfBlob = doc.output("blob");
+    saveAs(pdfBlob, `Invoice-${invoiceNumber}.pdf`);
+
+    alert(`Invoice #${invoiceNumber} PDF generated!`);
+
+    // Reset form
+    setCustomer("");
+    setDate("");
+    setItems([{ name: "", qty: 1, price: 0 }]);
   };
 
+  // === JSX ===
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100 flex items-center justify-center p-6">
       <div className="bg-white shadow-2xl rounded-2xl p-8 w-full max-w-3xl">
         <h1 className="text-3xl font-bold text-blue-700 mb-8 text-center">
           Textile Billing App
         </h1>
+
         {/* Customer & Date */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           <div>
@@ -143,6 +169,7 @@ function App() {
             />
           </div>
         </div>
+
         {/* Items Table */}
         <h2 className="text-xl font-semibold text-gray-700 mb-3">Items</h2>
         <div className="overflow-x-auto mb-6">
@@ -206,6 +233,7 @@ function App() {
             </tbody>
           </table>
         </div>
+
         <div className="flex justify-between items-center mb-6">
           <button
             onClick={() => setItems([...items, { name: "", qty: 1, price: 0 }])}
@@ -215,6 +243,7 @@ function App() {
           </button>
           <div className="text-xl font-bold text-gray-800">Total: ₹{total}</div>
         </div>
+
         <button
           onClick={handleSubmit}
           className="w-full px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition"
