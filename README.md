@@ -22,9 +22,9 @@ Installation
 
 To start using the application:
 
-Clone the repository using: git clone https://github.com/yourusername/nexsys-billing.git
+Clone the repository using: git clone https://github.com/bvigneswar/Textile-Billing-App.git
 
-Navigate to the project folder using: cd nexsys-billing
+Navigate to the project folder using: cd Textile-Billing-App
 
 Install all dependencies using: npm install
 
